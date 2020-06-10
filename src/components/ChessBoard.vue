@@ -2,11 +2,23 @@
     <div class="chessbox">
         <table>
             <tr v-for="(row, ypart) in chessboard" v-bind:key="ypart">
-                <td class="chessplace" :class="{selected: isSelected(xpart, ypart), possible: isPossible(xpart, ypart), heat: isUnderHeat(xpart, ypart)}" v-for="(place, xpart) in row" v-bind:key="xpart" v-html="pieceCode(place)" @click="doClick(place, xpart, ypart)">
+                <td class="chessplace"
+                    :class="{selected: isSelected(xpart, ypart),
+                    possible: isPossible(xpart, ypart),
+                    heat: isUnderHeat(xpart, ypart)}"
+                    v-for="(place, xpart) in row"
+                    v-bind:key="xpart"
+                    v-html="pieceCode(place)"
+                    @click="doClick(place, xpart, ypart)">
                 </td>
             </tr>
         </table>
-        <div class="gamebox">{{onMove}} is on move.</div>
+        <div class="gamebox">
+            <p>{{onMove}} is on move.</p>
+            <input type="checkbox" v-model="showHeatMap" value="Show Heatmap">Show Heatmap
+            <p>Evaluated moves: {{evaluatedAIMoves}}</p>
+            <p>Points: {{evaluatePoints(chessboard)}}</p>
+        </div>
     </div>
 </template>
 
@@ -36,6 +48,14 @@
                         bishop:"&#9821;",
                         queen:"&#9819;",
                         king:"&#9818;"
+                    },
+                    worth:{
+                        pawn: 1.5,
+                        rook: 8.6,
+                        knight: 5.3,
+                        bishop: 5.3,
+                        queen: 15.5,
+                        king: 100
                     }
                 },
                 selectedItem: {
@@ -50,7 +70,9 @@
                     }
                 ],
                 heatmap: [],
-                onMove: 'white'
+                onMove: 'white',
+                showHeatMap: false,
+                evaluatedAIMoves: 0
             }
         },
         mounted() {
@@ -78,7 +100,7 @@
                     this.possibleMoves = [];
                     this.onMove = 'black';
 
-                    this.aiMove();
+                    this.aiMovePoints();
 
                     return
                 }
@@ -91,16 +113,19 @@
                 this.heatmap = this.createHeatMap(this.chessboard, (place.color === 'white') ? 'black' : 'white');
 
                 //check moves for mate and remove some if so
-                this.possibleMoves = this.checkMovesforCheck(this.possibleMoves, this.chessboard, place, xpart, ypart)
+                this.possibleMoves = this.checkMovesCheck(this.possibleMoves, this.chessboard, place, xpart, ypart)
             },
-            checkMovesforCheck(moves, board, place, xpart, ypart){
+            checkMovesCheck(moves, board, place, xpart, ypart){
 
                 //big oof. check if the move doesnt put the king in danger
                 let movesleft = [];
+                let pointEval = this.evaluatePoints(board);
+                let pointsbefore = (place.color === 'white') ? pointEval[1] : pointEval[0];
 
                 for (let ii in moves){
 
                     console.log('[mate check]checking move ' + ii)
+                    if (place.color === 'black') this.evaluatedAIMoves ++;
 
                     //copy the board
                     let boardCopy = JSON.parse(JSON.stringify(this.chessboard));
@@ -112,34 +137,116 @@
                     let heatmap = this.createHeatMap(boardCopy, (place.color === 'white') ? 'black' : 'white');
 
                     //king still under fire?
-                    let king = this.getItem(boardCopy, {piece: 'king', color: place.color})
+                    let king = this.getItems(boardCopy, {piece: 'king', color: place.color})[0];
                     let kingUnderHeat = this.positionContained(king, heatmap)
+
+                    //Point eval
+                    let pointEval = this.evaluatePoints(boardCopy);
+                    let pointsafter = (place.color === 'white') ? pointEval[1] : pointEval[0];
 
                     //if not alleviated
                     if (!kingUnderHeat){
                         console.log('added possible move')
-                        movesleft.push(moves[ii])
+                        movesleft.push(Object.assign(moves[ii], {points: pointsbefore - pointsafter}))
                     }
                 }
 
+                console.log(movesleft);
                 return movesleft
 
             },
-            aiMove(){
+            evaluatePoints(board){
+                let colorPointsWhite = 0
+                let colorPointsBlack = 0;
+
+                _.forEach(board, (row) =>{
+                    _.forEach(row, (item) => {
+                        let points =  this.chesspieces.worth[item.piece];
+                        if (item.color === 'white') colorPointsWhite += points
+                        if (item.color === 'black') colorPointsBlack += points
+                    })
+                })
+                return [colorPointsWhite, colorPointsBlack];
+            },
+            aiMoveRandom(){
                 let allBlackItems = this.getItems(this.chessboard, {color: 'black'})
-                console.log(allBlackItems)
-                return allBlackItems;
+
+                //do random move
+                let moveDone = false;
+                let tries = 0;
+
+                do {
+                    let randomPawn = _.sample(allBlackItems);
+                    console.log(allBlackItems)
+                    let movesAvailable = this.checkMoves(this.chessboard, randomPawn, randomPawn.x, randomPawn.y, false);
+                    movesAvailable = this.checkMovesCheck(movesAvailable, this.chessboard, randomPawn, randomPawn.x, randomPawn.y);
+
+                    console.log(randomPawn)
+                    console.log(movesAvailable)
+
+                    if (movesAvailable.length > 0){
+                        let randomMove = _.sample(movesAvailable)
+                        this.doMove(this.chessboard, randomPawn.x, randomPawn.y, randomMove.x, randomMove.y)
+                        moveDone = true;
+                        this.onMove = 'white';
+
+                        console.log(randomMove)
+                        console.log(allBlackItems)
+
+                    }
+
+                    tries ++;
+                }
+                while (!moveDone)
+                console.log(tries);
+            },
+            aiMovePoints(){
+                let allBlackItems = this.getItems(this.chessboard, {color: 'black'})
+                this.evaluatedAIMoves = 0;
+
+                let mostpoints = -1;
+                let bestMove = [];
+
+                //Get all moves
+                _.forEach(allBlackItems, (item) =>{
+                    item.moves = this.checkMoves(this.chessboard, item, item.x, item.y, false);
+                    item.moves = this.checkMovesCheck(item.moves, this.chessboard, item, item.x, item.y);
+                    _.forEach(item.moves, (move) =>{
+                        if (move.points >= mostpoints){
+                            bestMove = _.assign(move, {item: item});
+                            mostpoints = move.points
+                        }
+                    });
+                });
+
+                if (bestMove === []){
+                    console.log("Checkmate?")
+                    return;
+                }
+
+                //Not really all that good
+                if (mostpoints === 0){
+                    this.aiMoveRandom();
+                    return
+                }
+
+                this.doMove(this.chessboard, bestMove.item.x, bestMove.item.y, bestMove.x, bestMove.y)
+                this.onMove = 'white';
+
+                console.log(allBlackItems);
+                console.log(bestMove);
             },
             getItems(board, obj){
                 let items = [];
-                _.forEach(board, (row, xx) =>{
-                    _.forEach(_.filter(row, obj), (item, yy) => items.push({
+                _.forEach(board, (row, yy) =>{
+                    _.forEach(row, (item, xx) => items.push({
                         piece: item.piece,
                         color: item.color,
                         x: xx,
                         y: yy
                     }))
                 })
+                items = _.filter(items, obj)
                 return items;
             },
             doMove(board, oldx, oldy, xpart, ypart){
@@ -181,7 +288,6 @@
                 return heatmap;
             },
             checkMoves(board, piece, xpart, ypart, isForHeatMap){
-                console.log('checking moves');
                 let moves = [];
 
                 if (piece.piece === 'pawn'){
@@ -335,6 +441,7 @@
                 return false;
             },
             isUnderHeat(x, y){
+                if (!this.showHeatMap) return false;
                 if (_.find(this.heatmap, {x: x, y: y})) return true
                 return false;
             },
