@@ -18,6 +18,8 @@
             <input type="checkbox" v-model="showHeatMap" value="Show Heatmap">Show Heatmap
             <p>Evaluated moves: {{evaluatedAIMoves}}</p>
             <p>Points: {{evaluatePoints(chessboard)}}</p>
+            <p>Decision: {{decision}}</p>
+            <input>
         </div>
     </div>
 </template>
@@ -25,6 +27,7 @@
 <script>
     import _ from 'lodash';
 
+    const audio = new Audio(require('../assets/move.wav'));
     //Needs en passant
 
     export default {
@@ -72,7 +75,8 @@
                 heatmap: [],
                 onMove: 'white',
                 showHeatMap: false,
-                evaluatedAIMoves: 0
+                evaluatedAIMoves: 0,
+                decision: []
             }
         },
         mounted() {
@@ -82,7 +86,6 @@
         methods: {
             doClick(place, xpart, ypart){
                 console.log("click")
-                console.log("for " + place.piece)
 
                 //If its a possible move
                 if (this.isPossible(xpart, ypart) && this.onMove === 'white') {
@@ -95,13 +98,14 @@
                     //move player
                     this.doMove(this.chessboard, oldx, oldy, xpart, ypart)
 
+                    audio.play();
+
                     //set selection to 0, possible moves to 0 and black on move
                     this.selectItem({}, -1, -1)
                     this.possibleMoves = [];
                     this.onMove = 'black';
 
-                    this.aiMovePoints();
-
+                    _.delay(this.aiMovePoints, 1000)
                     return
                 }
 
@@ -124,34 +128,31 @@
 
                 for (let ii in moves){
 
-                    console.log('[mate check]checking move ' + ii)
-                    if (place.color === 'black') this.evaluatedAIMoves ++;
-
                     //copy the board
-                    let boardCopy = JSON.parse(JSON.stringify(this.chessboard));
+                    let boardCopySecond = JSON.parse(JSON.stringify(board));
 
                     //do the move
-                    this.doMove(boardCopy, xpart, ypart, moves[ii].x,moves[ii].y)
+                    this.doMove(boardCopySecond, xpart, ypart, moves[ii].x,moves[ii].y)
 
                     //get heatmap
-                    let heatmap = this.createHeatMap(boardCopy, (place.color === 'white') ? 'black' : 'white');
+                    let heatmap = this.createHeatMap(boardCopySecond, (place.color === 'white') ? 'black' : 'white');
 
                     //king still under fire?
-                    let king = this.getItems(boardCopy, {piece: 'king', color: place.color})[0];
+                    let king = this.getItems(boardCopySecond, {piece: 'king', color: place.color})[0];
                     let kingUnderHeat = this.positionContained(king, heatmap)
 
                     //Point eval
-                    let pointEval = this.evaluatePoints(boardCopy);
+                    let pointEval = this.evaluatePoints(boardCopySecond);
                     let pointsafter = (place.color === 'white') ? pointEval[1] : pointEval[0];
 
                     //if not alleviated
                     if (!kingUnderHeat){
-                        console.log('added possible move')
+                        //console.log('added possible move')
                         movesleft.push(Object.assign(moves[ii], {points: pointsbefore - pointsafter}))
                     }
                 }
 
-                console.log(movesleft);
+                //console.log(movesleft);
                 return movesleft
 
             },
@@ -185,6 +186,7 @@
                     console.log(movesAvailable)
 
                     if (movesAvailable.length > 0){
+
                         let randomMove = _.sample(movesAvailable)
                         this.doMove(this.chessboard, randomPawn.x, randomPawn.y, randomMove.x, randomMove.y)
                         moveDone = true;
@@ -201,40 +203,103 @@
                 console.log(tries);
             },
             aiMovePoints(){
+
                 let allBlackItems = this.getItems(this.chessboard, {color: 'black'})
                 this.evaluatedAIMoves = 0;
 
-                let mostpoints = -1;
-                let bestMove = [];
+                let bestMoveBlack = {points: -100};
+                let chosenMoveWhite = {points: -100};
 
                 //Get all moves
-                _.forEach(allBlackItems, (item) =>{
-                    item.moves = this.checkMoves(this.chessboard, item, item.x, item.y, false);
-                    item.moves = this.checkMovesCheck(item.moves, this.chessboard, item, item.x, item.y);
-                    _.forEach(item.moves, (move) =>{
-                        if (move.points >= mostpoints){
-                            bestMove = _.assign(move, {item: item});
-                            mostpoints = move.points
+                _.forEach(allBlackItems, (blackItem) =>{
+
+                    //Evaluate all moves
+                    blackItem.moves = this.checkMoves(this.chessboard, blackItem, blackItem.x, blackItem.y, false);
+                    blackItem.moves = this.checkMovesCheck(blackItem.moves, this.chessboard, blackItem, blackItem.x, blackItem.y);
+
+                    //For each move
+                    _.forEach(blackItem.moves, (blackMove) =>{
+                        //Next black move
+                        this.evaluatedAIMoves++;
+
+                        //Copy the board and try on copied board
+                        let boardCopy = JSON.parse(JSON.stringify(this.chessboard));
+                        this.doMove(boardCopy, blackItem.x, blackItem.y, blackMove.x, blackMove.y)
+
+                        //Get All White items and reset the best move for this black move
+                        let bestMoveWhite = {points: -100};
+                        let allWhiteItems = this.getItems(boardCopy, {color: 'white'})
+
+                        //For each white item get all evaluated moves
+                        _.forEach(allWhiteItems, (whiteItem) => {
+                            whiteItem.moves = this.checkMoves(boardCopy, whiteItem, whiteItem.x, whiteItem.y, false);
+                            whiteItem.moves = this.checkMovesCheck(whiteItem.moves, boardCopy, whiteItem, whiteItem.x, whiteItem.y);
+
+                            //For each white move evaluate points
+                            _.forEach(whiteItem.moves, (whiteMove) => {
+                                this.evaluatedAIMoves++;
+                                if (whiteMove.points >= bestMoveWhite.points)
+                                    bestMoveWhite = _.assign(whiteMove, {item: whiteItem, points: whiteMove.points, moves: []});
+                            })
+                        });
+
+                        //Set move if the black move gets more points than the best white move
+                        let POINT_DIFF = blackMove.points - bestMoveWhite.points
+                        if ((POINT_DIFF) > bestMoveBlack.points){
+
+                            console.log("POSSIBLE POINT DIFFERENCE")
+                            console.log(blackMove.points - bestMoveWhite.points)
+
+                            this.decision = [blackMove.points, bestMoveWhite.points, POINT_DIFF]
+
+                            bestMoveBlack = _.assign(blackMove, {item: blackItem, points: POINT_DIFF, moves: []});
+                            chosenMoveWhite = bestMoveWhite;
                         }
                     });
                 });
 
-                if (bestMove === []){
+                console.log("DEBUG")
+
+                // //Copy the board and try on copied board
+                // let boardCopy = JSON.parse(JSON.stringify(this.chessboard));
+                // this.doMove(boardCopy, bestMoveBlack.item.x, bestMoveBlack.item.y, bestMoveBlack.x, bestMoveBlack.y)
+                //
+                // //Get All White items and reset the best move for this black move
+                // let allWhiteItems = this.getItems(boardCopy, {color: 'white'})
+                //
+                // //For each white item get all evaluated moves
+                // _.forEach(allWhiteItems, (whiteItem) => {
+                //     whiteItem.moves = this.checkMoves(boardCopy, whiteItem, whiteItem.x, whiteItem.y, false);
+                //     whiteItem.moves = this.checkMovesCheck(whiteItem.moves, boardCopy, whiteItem, whiteItem.x, whiteItem.y);
+                //
+                //     //For each white move evaluate points
+                //     _.forEach(whiteItem.moves, (whiteMove) => {
+                //         console.log(whiteItem.piece)
+                //         console.log(whiteMove)
+                //     })
+                // });
+
+                console.log("BEST MOVE BLACK")
+                console.log(bestMoveBlack)
+                console.log("BEST MOVE WHITE")
+                console.log(chosenMoveWhite)
+
+                if (bestMoveBlack.points === -100){
                     console.log("Checkmate?")
                     return;
                 }
+                //Play sound
+                audio.play();
 
                 //Not really all that good
-                if (mostpoints === 0){
+                if (bestMoveBlack.points <= 0){
+                    console.log("RANDOM MOVE")
                     this.aiMoveRandom();
                     return
                 }
 
-                this.doMove(this.chessboard, bestMove.item.x, bestMove.item.y, bestMove.x, bestMove.y)
+                this.doMove(this.chessboard, bestMoveBlack.item.x, bestMoveBlack.item.y, bestMoveBlack.x, bestMoveBlack.y)
                 this.onMove = 'white';
-
-                console.log(allBlackItems);
-                console.log(bestMove);
             },
             getItems(board, obj){
                 let items = [];
@@ -258,9 +323,7 @@
                 let piece = board[ypart][xpart];
 
                 if (piece.piece === 'pawn'){
-                    console.log('ispawn')
                     if (piece.color === 'white' && ypart === 0){
-                        console.log('is white and y is 0')
                         board[ypart][xpart].piece = 'queen'
                     }
                     if (piece.color === 'black' && ypart === 7){
@@ -291,7 +354,7 @@
                 let moves = [];
 
                 if (piece.piece === 'pawn'){
-                    console.log('checking for pawn');
+                    //console.log('checking for pawn');
 
                     //way
                     let way = (piece.color === 'white') ? -1 : 1
@@ -319,7 +382,7 @@
                 }
 
                 if (piece.piece === 'queen'){
-                    console.log('checking for queen');
+                    //console.log('checking for queen');
 
                     let directions = [
                         [-1, -1], [0, -1], [1, -1],[-1, 0],
@@ -333,7 +396,7 @@
                 }
 
                 if (piece.piece === 'rook'){
-                    console.log('checking for rook');
+                    //console.log('checking for rook');
 
                     let directions = [
                          [0, -1], [-1, 0],
@@ -347,7 +410,7 @@
                 }
 
                 if (piece.piece === 'bishop'){
-                    console.log('checking for bishop');
+                    //console.log('checking for bishop');
                     let directions = [
                         [-1, -1], [1, -1],
                         [-1, 1], [1, 1],
@@ -359,7 +422,7 @@
                 }
 
                 if (piece.piece === 'knight'){
-                    console.log('checking for knight');
+                    //console.log('checking for knight');
                     let directions = [
                         [2, -1], [2, 1], // right
                         [-1, -2], [1, -2], // top
@@ -377,7 +440,7 @@
                     }
                 }
                 if (piece.piece === 'king'){
-                    console.log('checking for king');
+                    //console.log('checking for king');
 
                     let directions = [
                         [-1, -1], [0, -1], [1, -1],
